@@ -1,0 +1,88 @@
+name: Update releases.json
+
+on:
+  release:
+    types: 
+      - published
+      - edited
+      - deleted
+
+permissions:
+  contents: write
+  
+concurrency:
+  group: update-releases-json
+  cancel-in-progress: true
+
+jobs:
+  update-json:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch ALL releases
+        run: |
+          page=1
+          echo "[]" > releases.json
+      
+          while true; do
+            echo "Fetching page $page"
+      
+            response=$(curl -s \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100&page=$page")
+      
+            count=$(echo "$response" | jq length)
+      
+            if [ "$count" -eq 0 ]; then
+              echo "Done fetching releases"
+              break
+            fi
+      
+            jq -s 'add' releases.json <(echo "$response") > temp.json
+            mv temp.json releases.json
+      
+            page=$((page + 1))
+          done
+
+      - name: Format JSON
+        run: |
+          jq '.' releases.json > temp.json
+          mv temp.json releases.json
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout main
+
+          # Save local changes temporarily
+          git stash push --include-untracked
+
+          # Pull latest remote changes
+          git pull --rebase origin main
+
+          # Restore local changes
+          git stash pop || true
+
+          # Add file
+          git add releases.json
+
+          # Skip if nothing changed
+          git diff --cached --quiet && echo "No changes" && exit 0
+
+          # Commit
+          git commit -m "Auto update releases.json"
+
+          # Push
+          git push origin main
